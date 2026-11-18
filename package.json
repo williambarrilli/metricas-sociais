@@ -1,0 +1,12 @@
+{
+  "name": "metricas-sociais",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Coletor somente leitura de métricas do Instagram, Facebook, TikTok e YouTube.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "metricas": "node metricas.mjs",
+    "test": "node --test metricas.test.mjs"
+  }
+}
