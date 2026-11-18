@@ -7,7 +7,18 @@ Requer Node 18 ou superior. Não possui dependências externas.
 ```bash
 cp .env.example .env
 # preencha o .env com os tokens das contas
+npm install
 npm test
+```
+
+## Desenvolvimento
+
+O código-fonte está em TypeScript e a compilação gera `dist/`, que não é versionado.
+
+```bash
+npm run typecheck # verifica os tipos sem gerar arquivos
+npm run build     # compila para dist/
+npm test          # compila e executa os testes
 ```
 
 O comando abaixo coleta as métricas:
@@ -24,12 +35,14 @@ Copie `.env.example` para `.env` se ainda não existir e preencha apenas as vari
 
 | Rede | Variáveis | Acesso necessário |
 |---|---|---|
-| Instagram profissional | `META_IG_USER_ID`, `META_IG_ACCESS_TOKEN` | Conta profissional autorizada para leitura de perfil, mídia e Insights. |
+| Instagram profissional | `META_IG_LOGIN=instagram`, `META_IG_USER_ID`, `META_IG_ACCESS_TOKEN` | No Graph API Explorer, escolha `graph.instagram.com`, gere o Instagram Access Token e consulte `me?fields=id,username,media_count`. O `id` retornado é o `META_IG_USER_ID`. |
 | Página Facebook | `META_PAGE_ID`, `META_PAGE_ACCESS_TOKEN` | Página administrada/analisável, com leitura de engajamento e Insights. |
 | TikTok | `TIKTOK_ACCESS_TOKEN` | Aplicativo TikTok autorizado com `user.info.basic`, `user.info.stats` e `video.list`. |
-| YouTube | `YOUTUBE_ACCESS_TOKEN` | OAuth com `youtube.readonly` e `yt-analytics.readonly`. |
+| YouTube | `YOUTUBE_ACCESS_TOKEN` ou `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` e `YOUTUBE_REFRESH_TOKEN` | OAuth com `youtube.readonly` e `yt-analytics.readonly`. |
 
-Os tokens são obtidos uma vez nos painéis de desenvolvedor de cada plataforma. Esta primeira versão não abre login OAuth nem renova tokens: quando um token expirar, gere e substitua-o no `.env`.
+Os tokens são obtidos nos painéis de desenvolvedor de cada plataforma. Para o YouTube, se `YOUTUBE_REFRESH_TOKEN`, `YOUTUBE_CLIENT_ID` e `YOUTUBE_CLIENT_SECRET` estiverem preenchidos, o script renova o access token a cada coleta; caso contrário, usa `YOUTUBE_ACCESS_TOKEN` diretamente. O script não abre login OAuth.
+
+O token gerado em `graph.instagram.com` não precisa de Página Facebook. Para ele, mantenha `META_IG_LOGIN=instagram`; o coletor usará a API do Instagram. Para tokens antigos do Facebook Login, remova essa variável.
 
 ## Resultado
 

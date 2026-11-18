@@ -3,7 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-function lerEnv(raiz) {
+type Env = Record<string, string | undefined>;
+type Periodo = { dias: number; fuso: string; desde: string; ate: string };
+type FetchImpl = (url: string, opcoes?: any) => Promise<any>;
+type OpcoesRequisicao = { fetchImpl?: FetchImpl; token?: string; method?: string; body?: any; form?: Record<string, string> };
+type ArgsColeta = { env: Env; periodo: Periodo; fetchImpl: FetchImpl };
+type Coleta = (args: ArgsColeta) => Promise<any>;
+type Plataforma = { status: 'ok' | 'erro'; erro?: string; conta: any; publicacoes: any[]; avisos: string[] };
+type Relatorio = { geradoEm: string; periodo: Periodo; parcial: boolean; plataformas: Record<string, Plataforma> };
+type OpcoesColeta = { env?: Env; dias?: number; agora?: Date; fetchImpl?: FetchImpl; coletas?: Record<string, Coleta> };
+type Argumentos = { dias: number; saida?: string; ajuda?: boolean };
+
+function lerEnv(raiz: string) {
   const arquivo = path.join(raiz, '.env');
   if (!fs.existsSync(arquivo)) return;
   for (const linha of fs.readFileSync(arquivo, 'utf8').split(/\r?\n/)) {
@@ -14,18 +25,19 @@ function lerEnv(raiz) {
 
 const TZ = 'America/Sao_Paulo';
 const META_BASE = 'https://graph.facebook.com';
+const META_INSTAGRAM_BASE = 'https://graph.instagram.com';
 const TIKTOK_BASE = 'https://open.tiktokapis.com/v2';
 const YOUTUBE_BASE = 'https://www.googleapis.com/youtube/v3';
 const YOUTUBE_ANALYTICS_BASE = 'https://youtubeanalytics.googleapis.com/v2';
 
-function dataNoFuso(data, timeZone = TZ) {
+function dataNoFuso(data: Date, timeZone = TZ) {
   const partes = new Intl.DateTimeFormat('en-US', {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(data).reduce((acc, parte) => ({ ...acc, [parte.type]: parte.value }), {});
+  }).formatToParts(data).reduce<Record<string, string>>((acc, parte) => ({ ...acc, [parte.type]: parte.value }), {});
   return `${partes.year}-${partes.month}-${partes.day}`;
 }
 
-function adicionarDias(dataIso, dias) {
+function adicionarDias(dataIso: string, dias: number) {
   const data = new Date(`${dataIso}T00:00:00Z`);
   data.setUTCDate(data.getUTCDate() + dias);
   return data.toISOString().slice(0, 10);
@@ -37,29 +49,29 @@ export function criarPeriodo(dias = 30, agora = new Date()) {
   return { dias, fuso: TZ, desde: adicionarDias(ate, 1 - dias), ate };
 }
 
-function dataEstaNoPeriodo(data, periodo) {
+function dataEstaNoPeriodo(data: string | number | Date | undefined, periodo: Periodo) {
   if (!data) return false;
   const iso = new Date(data).toISOString().slice(0, 10);
   return iso >= periodo.desde && iso <= periodo.ate;
 }
 
-function numero(valor) {
+function numero(valor: unknown) {
   const n = Number(valor);
   return Number.isFinite(n) ? n : null;
 }
 
-function textoErro(erro, segredos = []) {
+function textoErro(erro: unknown, segredos: string[] = []) {
   let texto = erro instanceof Error ? erro.message : String(erro);
   for (const segredo of segredos.filter(Boolean)) texto = texto.replaceAll(segredo, '[oculto]');
   return texto.slice(0, 500);
 }
 
-function exigir(env, campos) {
+function exigir(env: Env, campos: string[]) {
   const faltando = campos.filter((campo) => !env[campo]);
   if (faltando.length) throw new Error(`Configure no .env: ${faltando.join(', ')}.`);
 }
 
-function urlApi(base, caminho, parametros = {}) {
+function urlApi(base: string, caminho: string, parametros: Record<string, unknown> = {}) {
   const url = new URL(caminho.replace(/^\//, ''), base.endsWith('/') ? base : `${base}/`);
   for (const [chave, valor] of Object.entries(parametros)) {
     if (valor !== undefined && valor !== null && valor !== '') url.searchParams.set(chave, String(valor));
@@ -67,14 +79,16 @@ function urlApi(base, caminho, parametros = {}) {
   return url.toString();
 }
 
-async function requisitarJson(url, { fetchImpl = fetch, token, method = 'GET', body } = {}) {
+async function requisitarJson(url: string, { fetchImpl = fetch as unknown as FetchImpl, token, method = 'GET', body, form }: OpcoesRequisicao = {}) {
   const resposta = await fetchImpl(url, {
     method,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+      ...(!form && body ? { 'Content-Type': 'application/json' } : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(form ? { body: new URLSearchParams(form).toString() } : {}),
+    ...(!form && body ? { body: JSON.stringify(body) } : {}),
   });
   const bruto = await resposta.text();
   let json;
@@ -86,7 +100,23 @@ async function requisitarJson(url, { fetchImpl = fetch, token, method = 'GET', b
   return json;
 }
 
-export async function paginarGet(url, opcoes = {}) {
+async function tokenYouTube(env: Env, fetchImpl: FetchImpl) {
+  if (!env.YOUTUBE_REFRESH_TOKEN) {
+    exigir(env, ['YOUTUBE_ACCESS_TOKEN']);
+    return env.YOUTUBE_ACCESS_TOKEN;
+  }
+  exigir(env, ['YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET']);
+  const resposta = await requisitarJson('https://oauth2.googleapis.com/token', {
+    fetchImpl, method: 'POST', form: {
+      client_id: env.YOUTUBE_CLIENT_ID!, client_secret: env.YOUTUBE_CLIENT_SECRET!,
+      refresh_token: env.YOUTUBE_REFRESH_TOKEN, grant_type: 'refresh_token',
+    },
+  });
+  if (!resposta.access_token) throw new Error('A renovação do token do YouTube não retornou access_token.');
+  return resposta.access_token;
+}
+
+export async function paginarGet(url: string, opcoes: OpcoesRequisicao = {}) {
   const itens = [];
   let proxima = url;
   while (proxima) {
@@ -97,15 +127,19 @@ export async function paginarGet(url, opcoes = {}) {
   return itens;
 }
 
-function valorInsight(insights, nome) {
-  const insight = (insights.data || []).find((item) => item.name === nome);
+function valorInsight(insights: any, nome: string) {
+  const insight = (insights.data || []).find((item: any) => item.name === nome);
   const valores = insight?.values || [];
   return numero(valores.at(-1)?.value ?? insight?.value);
 }
 
-async function metricasInstagram(mid, versao, token, fetchImpl) {
+function baseInstagram(env: Env) {
+  return env.META_IG_LOGIN === 'instagram' ? META_INSTAGRAM_BASE : META_BASE;
+}
+
+async function metricasInstagram(mid: string, versao: string, token: string, fetchImpl: FetchImpl, base: string) {
   try {
-    const dados = await requisitarJson(urlApi(META_BASE, `/${versao}/${mid}/insights`, {
+    const dados = await requisitarJson(urlApi(base, `/${versao}/${mid}/insights`, {
       metric: 'views,reach,shares,saved,total_interactions',
     }), { token, fetchImpl });
     return {
@@ -118,19 +152,20 @@ async function metricasInstagram(mid, versao, token, fetchImpl) {
   }
 }
 
-async function coletarInstagram({ env, periodo, fetchImpl }) {
+async function coletarInstagram({ env, periodo, fetchImpl }: ArgsColeta) {
   exigir(env, ['META_IG_USER_ID', 'META_IG_ACCESS_TOKEN']);
   const versao = env.META_GRAPH_VERSION || 'v27.0';
-  const token = env.META_IG_ACCESS_TOKEN;
-  const conta = await requisitarJson(urlApi(META_BASE, `/${versao}/${env.META_IG_USER_ID}`, {
+  const token = env.META_IG_ACCESS_TOKEN!;
+  const base = baseInstagram(env);
+  const conta = await requisitarJson(urlApi(base, `/${versao}/${env.META_IG_USER_ID}`, {
     fields: 'id,username,name,followers_count,media_count',
   }), { token, fetchImpl });
-  const midias = await paginarGet(urlApi(META_BASE, `/${versao}/${env.META_IG_USER_ID}/media`, {
+  const midias = await paginarGet(urlApi(base, `/${versao}/${env.META_IG_USER_ID}/media`, {
     fields: 'id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count', limit: 100,
   }), { token, fetchImpl });
   const recentes = midias.filter((midia) => dataEstaNoPeriodo(midia.timestamp, periodo));
   const publicacoes = await Promise.all(recentes.map(async (midia) => {
-    const insights = await metricasInstagram(midia.id, versao, token, fetchImpl);
+    const insights = await metricasInstagram(midia.id, versao, token, fetchImpl, base);
     return {
       id: midia.id, tipo: midia.media_product_type || midia.media_type, publicadoEm: midia.timestamp,
       url: midia.permalink || null, titulo: midia.caption || null,
@@ -149,11 +184,11 @@ async function coletarInstagram({ env, periodo, fetchImpl }) {
   };
 }
 
-function totalResumo(conteudos, chave) {
+function totalResumo(conteudos: any[], chave: string) {
   return conteudos.reduce((total, item) => total + (numero(item.metricas?.[chave]) || 0), 0);
 }
 
-async function coletarFacebook({ env, periodo, fetchImpl }) {
+async function coletarFacebook({ env, periodo, fetchImpl }: ArgsColeta) {
   exigir(env, ['META_PAGE_ID', 'META_PAGE_ACCESS_TOKEN']);
   const versao = env.META_GRAPH_VERSION || 'v27.0';
   const token = env.META_PAGE_ACCESS_TOKEN;
@@ -182,7 +217,7 @@ async function coletarFacebook({ env, periodo, fetchImpl }) {
   };
 }
 
-async function coletarTikTok({ env, periodo, fetchImpl }) {
+async function coletarTikTok({ env, periodo, fetchImpl }: ArgsColeta) {
   exigir(env, ['TIKTOK_ACCESS_TOKEN']);
   const token = env.TIKTOK_ACCESS_TOKEN;
   const camposConta = 'open_id,display_name,username,follower_count,following_count,likes_count,video_count';
@@ -220,13 +255,12 @@ async function coletarTikTok({ env, periodo, fetchImpl }) {
   };
 }
 
-function blocos(itens, tamanho = 50) {
+function blocos<T>(itens: T[], tamanho = 50) {
   return Array.from({ length: Math.ceil(itens.length / tamanho) }, (_, i) => itens.slice(i * tamanho, i * tamanho + tamanho));
 }
 
-async function coletarYouTube({ env, periodo, fetchImpl }) {
-  exigir(env, ['YOUTUBE_ACCESS_TOKEN']);
-  const token = env.YOUTUBE_ACCESS_TOKEN;
+async function coletarYouTube({ env, periodo, fetchImpl }: ArgsColeta) {
+  const token = await tokenYouTube(env, fetchImpl);
   const canais = await requisitarJson(urlApi(YOUTUBE_BASE, '/channels', { part: 'snippet,statistics,contentDetails', mine: 'true' }), { token, fetchImpl });
   const canal = canais.items?.[0];
   if (!canal) throw new Error('Nenhum canal do YouTube foi encontrado para este token.');
@@ -250,11 +284,15 @@ async function coletarYouTube({ env, periodo, fetchImpl }) {
     const resposta = await requisitarJson(urlApi(YOUTUBE_BASE, '/videos', { part: 'snippet,statistics', id: grupo.join(',') }), { token, fetchImpl });
     for (const video of resposta.items || []) detalhes.set(video.id, video);
   }
-  const analytics = await requisitarJson(urlApi(YOUTUBE_ANALYTICS_BASE, '/reports', {
-    ids: 'channel==MINE', startDate: periodo.desde, endDate: periodo.ate,
-    dimensions: 'video', metrics: 'views,likes,comments,shares,estimatedMinutesWatched,averageViewDuration',
-  }), { token, fetchImpl });
-  const indice = new Map((analytics.rows || []).map((linha) => Object.fromEntries((analytics.columnHeaders || []).map((coluna, i) => [coluna.name, linha[i]]))).map((linha) => [linha.video, linha]));
+  const indice = new Map();
+  for (const id of ids) {
+    const analytics = await requisitarJson(urlApi(YOUTUBE_ANALYTICS_BASE, '/reports', {
+      ids: 'channel==MINE', startDate: periodo.desde, endDate: periodo.ate,
+      filters: `video==${id}`, metrics: 'views,likes,comments,shares,estimatedMinutesWatched,averageViewDuration',
+    }), { token, fetchImpl });
+    const linha = analytics.rows?.[0];
+    if (linha) indice.set(id, Object.fromEntries((analytics.columnHeaders || []).map((coluna: any, i: number) => [coluna.name, linha[i]])));
+  }
   const publicacoes = recentes.map((item) => {
     const video = detalhes.get(item.contentDetails.videoId) || {};
     const dados = indice.get(item.contentDetails.videoId) || {};
@@ -278,34 +316,34 @@ async function coletarYouTube({ env, periodo, fetchImpl }) {
   };
 }
 
-const COLETAS_PADRAO = { instagram: coletarInstagram, facebook: coletarFacebook, tiktok: coletarTikTok, youtube: coletarYouTube };
+const COLETAS_PADRAO: Record<string, Coleta> = { instagram: coletarInstagram, facebook: coletarFacebook, tiktok: coletarTikTok, youtube: coletarYouTube };
 
-export async function coletarMetricas({ env, dias = 30, agora = new Date(), fetchImpl = fetch, coletas = COLETAS_PADRAO } = {}) {
+export async function coletarMetricas({ env = {}, dias = 30, agora = new Date(), fetchImpl = fetch as unknown as FetchImpl, coletas = COLETAS_PADRAO }: OpcoesColeta = {}): Promise<Relatorio> {
   const periodo = criarPeriodo(dias, agora);
   const resultados = await Promise.all(Object.entries(coletas).map(async ([nome, coleta]) => {
     try {
       const dados = await coleta({ env, periodo, fetchImpl });
       return [nome, { status: 'ok', ...dados }];
     } catch (erro) {
-      const segredos = Object.entries(env || {}).filter(([chave]) => chave.endsWith('_TOKEN')).map(([, valor]) => valor);
+      const segredos = Object.entries(env).filter(([chave]) => chave.endsWith('_TOKEN') || chave.endsWith('_SECRET')).map(([, valor]) => valor).filter((valor): valor is string => Boolean(valor));
       return [nome, { status: 'erro', erro: textoErro(erro, segredos), conta: null, publicacoes: [], avisos: [] }];
     }
   }));
-  const plataformas = Object.fromEntries(resultados);
+  const plataformas = Object.fromEntries(resultados) as Record<string, Plataforma>;
   return {
     geradoEm: agora.toISOString(), periodo, parcial: Object.values(plataformas).some((plataforma) => plataforma.status !== 'ok'), plataformas,
   };
 }
 
-export function resumoRelatorio(relatorio) {
+export function resumoRelatorio(relatorio: Relatorio) {
   return Object.entries(relatorio.plataformas).map(([nome, plataforma]) => {
     if (plataforma.status !== 'ok') return `${nome}: ERRO — ${plataforma.erro}`;
     return `${nome}: ${plataforma.publicacoes.length} publicação(ões), ${plataforma.conta?.seguidores ?? plataforma.conta?.inscritos ?? '—'} seguidores/inscritos`;
   });
 }
 
-function argumentos(argv) {
-  const opcoes = { dias: 30 };
+function argumentos(argv: string[]): Argumentos {
+  const opcoes: Argumentos = { dias: 30 };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--dias') opcoes.dias = Number(argv[++i]);
     else if (argv[i] === '--saida') opcoes.saida = argv[++i];

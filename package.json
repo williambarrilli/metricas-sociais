@@ -6,7 +6,13 @@
   "description": "Coletor somente leitura de métricas do Instagram, Facebook, TikTok e YouTube.",
   "engines": { "node": ">=18" },
   "scripts": {
-    "metricas": "node metricas.mjs",
-    "test": "node --test metricas.test.mjs"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "metricas": "npm run build --silent && node dist/metricas.js",
+    "test": "npm run build --silent && node --test dist/metricas.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "7.0.2"
   }
 }
