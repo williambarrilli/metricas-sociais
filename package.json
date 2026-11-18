@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "description": "Coletor somente leitura de métricas do Instagram, Facebook, TikTok e YouTube.",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "metricas": "npm run build --silent && node dist/metricas.js",
-    "test": "npm run build --silent && node --test dist/metricas.test.js"
+    "test": "npm run build --silent && node --test dist/metricas.test.js dist/tiktok-autorizar.test.js",
+    "tiktok:autorizar": "npm run build --silent && node dist/tiktok-autorizar.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
